@@ -67,3 +67,34 @@ void Shader::Delete()
 {
 	glDeleteProgram(ID);
 }
+
+Shader::Shader(const char* computeFile) { // vibe code alert
+	std::string code = get_file_contents(computeFile);
+	const char* source = code.c_str();
+
+	GLuint compute = glCreateShader(GL_COMPUTE_SHADER);
+	glShaderSource(compute, 1, &source, NULL);
+	glCompileShader(compute);
+
+	// check for errors
+	GLint success;
+	glGetShaderiv(compute, GL_COMPILE_STATUS, &success);
+	if (!success) {
+		char log[1024];
+		glGetShaderInfoLog(compute, 1024, NULL, log);
+		std::cout << "COMPUTE SHADER ERROR:\n" << log << std::endl;
+	}
+
+	ID = glCreateProgram();
+	glAttachShader(ID, compute);
+	glLinkProgram(ID);
+
+	glGetProgramiv(ID, GL_LINK_STATUS, &success);
+	if (!success) {
+		char log[1024];
+		glGetProgramInfoLog(ID, 1024, NULL, log);
+		std::cout << "COMPUTE LINK ERROR:\n" << log << std::endl;
+	}
+
+	glDeleteShader(compute);
+}

@@ -1,0 +1,57 @@
+#version 430
+
+struct GPURay {
+	dvec2 pos;
+	dvec2 vel;
+	vec2 cartPos;
+	int dead;
+	int pad1; int pad2; int pad3; int pad4; int pad5;
+};
+
+layout(std430, binding = 0) buffer RayBuffer {
+    GPURay rays[];
+};
+
+uniform float r_s;
+uniform float deltaTime;
+uniform int rayCount;
+
+dvec2 accel(dvec2 pos, dvec2 vel) {
+    if (pos.r < double(r_s)) return dvec2(0.0);
+    return dvec2(
+        vel.g * vel.g * (pos.r - 1.5 * double(r_s)),
+		-2.0 * vel.r * vel.g / pos.r
+    );
+}
+
+layout(local_size_x = 64) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(rayCount)) return;
+    if (rays[i].dead == 1) return;
+
+    int substeps = clamp(int(1000.0 * double(r_s) / rays[i].pos.x), 1, 1000) + 15;
+    double subDelta = deltaTime / double(substeps);
+    dvec2 p = rays[i].pos;
+    dvec2 v = rays[i].vel;
+
+    for (int s = 0; s < substeps; s++) {
+        dvec2 k1p = v;
+        dvec2 k1v = accel(p, v);
+        dvec2 k2p = v + k1v * (subDelta / 2.0);
+        dvec2 k2v = accel(p + k1p * (subDelta / 2.0), v + k1v * (subDelta / 2.0));
+        dvec2 k3p = v + k2v * (subDelta / 2.0);
+        dvec2 k3v = accel(p + k2p * (subDelta / 2.0), v + k2v * (subDelta / 2.0));
+        dvec2 k4p = v + k3v * subDelta;
+        dvec2 k4v = accel(p + k3p * subDelta, v + k3v * subDelta);
+
+        p += (subDelta / 6.0) * (k1p + 2.0*k2p + 2.0*k3p + k4p);
+        v += (subDelta / 6.0) * (k1v + 2.0*k2v + 2.0*k3v + k4v);
+
+        if (p.r < double(r_s)) { rays[i].dead = 1; break; }
+    }
+
+    rays[i].pos = p;
+    rays[i].vel = v;
+}

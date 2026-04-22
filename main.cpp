@@ -2,6 +2,10 @@
 #include<vector>
 #include<map>
 #include<algorithm>
+
+#include"imgui.h"
+#include"imgui_impl_glfw.h"
+#include"imgui_impl_opengl3.h"
 #include<glad/glad.h>
 #include<GLFW/glfw3.h>
 #include<glm/glm.hpp>
@@ -22,6 +26,8 @@ double TIME_SCALE = 60;
 double WINDOW_SIZE = 800;
 bool RIGHT_DOWN = false;
 glm::vec2 old_MOUSE_POS;
+
+GLuint raySSBO = 0;
 
 struct Object {
 	double mass;		// in kg
@@ -46,14 +52,13 @@ struct Object {
 };
 
 std::vector<Object> Objects = {
-	Object(8.54e36, 1, glm::dvec2(0.0, 0.0), glm::dvec2(0.0, 0.0), glm::vec3(1.0f, 0.0f, 0.0f)),
-	Object(1.99e30, 1.3e6, glm::dvec2(4e+7, 0.0), glm::dvec2(0.0, 0.0), glm::vec3(1.0f, 1.0f, 0.0f))
+	Object(8.15e36, 1, glm::dvec2(0.0, 0.0), glm::dvec2(0.0, 0.0), glm::vec3(1.0f, 0.0f, 0.0f))
 };
 Object& BLACK_HOLE = Objects.at(0);
 
 struct Ray {
 	glm::dvec2 pos; // polar coordinates to BLACK_HOLE; r (r) in km, phi (g) in radians
-	glm::dvec2 vel;
+	glm::dvec2 vel; // velocity of the polar coordinates to BLACK_HOLE; r (r) in km/s, phi (g) in radians
 
 	glm::dvec2 cartPos; // in km
 
@@ -82,7 +87,7 @@ struct Ray {
 		}
 
 		return glm::dvec2(
-			pos.r * vel.g * vel.g - ((_c / 1000.0) * (_c / 1000.0) * BLACK_HOLE.r_s) / (pos.r * pos.r),
+			vel.g * vel.g * (pos.r - 1.5 * BLACK_HOLE.r_s),
 			-2.0 * vel.r * vel.g / pos.r
 		);
 	}
@@ -90,7 +95,7 @@ struct Ray {
 	void move(double deltaTime) {
 		if (!this->dead) this->trail.push_back(this->cartPos);
 		else this->trail.push_back(BLACK_HOLE.pos);
-		if (this->trail.size() > 500) this->trail.erase(trail.begin());
+		if (this->trail.size() > 1000) this->trail.erase(trail.begin());
 
 		if (this->dead) return;
 
@@ -129,11 +134,49 @@ struct Ray {
 
 std::vector<Ray> Rays = {};
 
+struct GPURay {
+	glm::dvec2 pos;
+	glm::dvec2 vel;
+	glm::vec2 cartPos;
+	int dead;
+	int pad1; int pad2; int pad3; int pad4; int pad5;
+};
+
+std::vector<GPURay> gpuRays = {};
+
+GPURay makeRay(glm::dvec2 pos, glm::dvec2 dir) {
+	GPURay ray;
+
+	dir = glm::normalize(dir) * (_c / 1000.0);
+
+	glm::dvec2 p = pos - BLACK_HOLE.pos;
+	double r = glm::length(p);
+
+	ray.cartPos = glm::vec2(pos);
+	ray.pos = glm::dvec2(r, atan2(p.y, p.x));
+	ray.vel = glm::dvec2(
+		glm::dot(p, dir) / r,
+		(p.x * dir.y - p.y * dir.x) / (r * r)
+	);
+	ray.dead = 0;
+	ray.pad1 = ray.pad2 = ray.pad3 = ray.pad4 = ray.pad5 = 0;
+
+	return ray;
+}
+
 void init_rays(int amount, glm::dvec2 pos) {
 	for (int i = 0; i < amount; i++) {
 		float angle = ((360.0f / (amount)) * i) * (_pi / 180.0f);
 		Rays.push_back(Ray(pos, glm::dvec2(cos(angle), sin(angle))));
 	}
+
+	/*glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, gpuRays.size() * sizeof(GPURay), gpuRays.data());
+
+	GPURay* check = (GPURay*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+	std::cout << "pre-dispatch ray[0] dead: " << check[0].dead
+		<< " Xpos: " << check[0].pos.x << std::endl;
+	glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);*/
 
 	/*for (int i = 0; i < amount; i++) {
 		Rays.push_back(Ray(glm::dvec2(-1e8, (20e7 / amount * i) - 10e7), glm::dvec2(1.0, 0.0)));
@@ -169,6 +212,7 @@ std::vector<GLuint> generateCircleIndices(int sectors) {
 }
 
 void mouse_callback(GLFWwindow* window, int button, int action, int mods) {
+	if (ImGui::GetIO().WantCaptureMouse) return;
 	if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
 		double xpos, ypos;
 		glfwGetCursorPos(window, &xpos, &ypos);
@@ -177,7 +221,11 @@ void mouse_callback(GLFWwindow* window, int button, int action, int mods) {
 		double worldX = (xpos / WINDOW_SIZE * 2.0 - 1.0 - SPACE_OFFSET.x) / SPACE_SCALE;
 		double worldY = ((WINDOW_SIZE - ypos) / WINDOW_SIZE * 2.0 - 1.0 - SPACE_OFFSET.y) / SPACE_SCALE;
 
-		init_rays(36, glm::dvec2(worldX, worldY));
+		init_rays(180, glm::dvec2(worldX, worldY));
+		/*double r = sqrt(worldX * worldX + worldY * worldY);
+		std::cout << "clicked at: " << worldX << ", " << worldY
+			<< " | r = " << r << " km"
+			<< " | r_s = " << BLACK_HOLE.r_s << " km" << std::endl;*/
 	}
 	if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
 		RIGHT_DOWN = true;
@@ -217,11 +265,11 @@ void cursor_callback(GLFWwindow* window, double xpos, double ypos) {
 int main() {
 	glfwInit();
 
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	GLFWwindow* window = glfwCreateWindow(WINDOW_SIZE, WINDOW_SIZE, "Black Hole Simulation    -    Starting...", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(WINDOW_SIZE, WINDOW_SIZE, "Black Hole Simulation - Starting...", NULL, NULL);
 	if (window == NULL) {
 		std::cout << "Failed to create GLFW window" << std::endl;
 		glfwTerminate();
@@ -241,6 +289,7 @@ int main() {
 	auto circleIndices = generateCircleIndices(sectors);
 
 	Shader shaderProgram("shaders/default.vert", "shaders/default.frag");
+	Shader computeShader("shaders/move_rays.comp");
 
 	VAO VAO1;
 	VAO1.Bind();
@@ -262,10 +311,21 @@ int main() {
 	VBO1.Unbind();
 	EBO1.Unbind();
 
+	glGenBuffers(1, &raySSBO);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, 100000/*maxrays*/ * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, raySSBO);
+
 	GLint uniScale = glGetUniformLocation(shaderProgram.ID, "scale");
 	GLint uniOffset = glGetUniformLocation(shaderProgram.ID, "offset");
 	GLint uniColor = glGetUniformLocation(shaderProgram.ID, "customColor");
-	std::cout << "scale=" << uniScale << " offset=" << uniOffset << " color=" << uniColor << std::endl;
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	ImGui::StyleColorsDark();
+	ImGui_ImplGlfw_InitForOpenGL(window, true);
+	ImGui_ImplOpenGL3_Init("#version 330");
 
 	double lastTime = glfwGetTime();
 	double timePassed = 0;
@@ -290,20 +350,23 @@ int main() {
 			lastTitleUpdate = currentTime;
 		}
 
-		int activeRays = 0;
-		for (Ray& ray : Rays) {
-			if (!ray.dead) activeRays += 1;
-		}
-
-		std::string title =
-			"Black Hole Simulation    -    FPS: " + std::to_string(displayFps) +
-			"    frameTime: " + std::to_string(displayFrameTime * 1e+6) +
-			"    Active Rays: " + std::to_string(activeRays) +
-			"    Minutes Passed: " + std::to_string((int)(timePassed / 60));
+		std::string title = "Black Hole Simulation - " + std::to_string(displayFps) + " fps";
 		glfwSetWindowTitle(window, title.c_str());
 
 		glClearColor(0.02f, 0.02f, 0.02f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
+
+		/*computeShader.Activate();
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, raySSBO);
+		glUniform1f(glGetUniformLocation(computeShader.ID, "r_s"), (float)BLACK_HOLE.r_s);
+		glUniform1f(glGetUniformLocation(computeShader.ID, "deltaTime"), (float)(deltaTime * TIME_SCALE));
+		glUniform1i(glGetUniformLocation(computeShader.ID, "rayCount"), (int)gpuRays.size());
+		glDispatchCompute((gpuRays.size() + 63) / 64, 1, 1);
+		glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);*/
+
+		ImGui_ImplOpenGL3_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
 
 		shaderProgram.Activate();
 		VAO1.Bind();
@@ -311,6 +374,35 @@ int main() {
 		for (Object& object : Objects) {
 			object.update();
 		}
+
+
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
+		GPURay* data = (GPURay*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+
+		/*if (gpuRays.size() > 0) {
+			std::cout << "ray[0] pos: " << data[0].pos.x << ", " << data[0].pos.y << std::endl;
+			std::cout << "ray[0] dead: " << data[0].dead << std::endl;
+		}*/
+
+		int activeRays = 0;
+		for (int i = 0; i < gpuRays.size(); i++) {
+			if (!data[i].dead) activeRays++;
+		}
+
+		/*for (int i = 0; i < (int)gpuRays.size(); i++) {
+			if (data[i].dead) continue;
+
+			double r = data[i].pos.x;
+			double phi = data[i].pos.y;
+			glm::dvec2 dot = glm::dvec2(r * cos(phi), r * sin(phi)) + BLACK_HOLE.pos;
+
+			glUniform1f(uniScale, 0.002);
+			glUniform2f(uniOffset, SPACE_SCALE * dot.x + SPACE_OFFSET.x, SPACE_SCALE * dot.y + SPACE_OFFSET.y);
+			glUniform3f(uniColor, 1.0f, 1.0f, 1.0f);
+			glDrawElements(GL_TRIANGLES, circleIndices.size(), GL_UNSIGNED_INT, 0);
+		}
+
+		glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);*/
 
 		for (Ray& ray : Rays) {
 			ray.move(deltaTime);
@@ -328,6 +420,7 @@ int main() {
 			}
 		}
 
+
 		for (Object& object : Objects) {
 			double renderRadius = std::max(object.r_s, object.diameter / 2.0);
 			glUniform1f(uniScale, std::max(SPACE_SCALE * renderRadius, 0.002));
@@ -337,13 +430,41 @@ int main() {
 			glDrawElements(GL_TRIANGLES, circleIndices.size(), GL_UNSIGNED_INT, 0);
 		}
 
-		
-
 		lastTime = currentTime;
+
+		ImGui::Begin("Black Hole Simulation");
+		double mass_solar = BLACK_HOLE.mass / 1.989e30;
+		double min_sol = 1e35 / 1.989e30, max_sol = 1e38 / 1.989e30;
+		double min_time = 1.0, max_time = 1000.0;
+
+		if (ImGui::SliderScalar("Mass", ImGuiDataType_Double, &mass_solar, &min_sol, &max_sol, "%.3gMsol", ImGuiSliderFlags_Logarithmic)) BLACK_HOLE.mass = mass_solar * 1.989e30;
+		ImGui::Text("Schwarzschild radius: %.2g km\n\n", BLACK_HOLE.r_s);
+
+		if (ImGui::SliderScalar("Time Scale", ImGuiDataType_Double, &TIME_SCALE, &min_time, &max_time, "%.0f")) TIME_SCALE = round(TIME_SCALE);
+		ImGui::Text("Time Passed: %.0f min %.0f s\n\n", floor(timePassed / 60), fmod(timePassed, 60.0));
+
+		ImGui::Text("FPS: %d", displayFps);
+		ImGui::Text("Frame Time: %.3f ms", displayFrameTime * 1000.0f);
+		ImGui::Text("Active Rays: %d\n\n", activeRays);
+
+		if (ImGui::Button("Clear Rays")) {
+			Rays.clear();
+			/*gpuRays.clear();
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
+			glBufferData(GL_SHADER_STORAGE_BUFFER, 100000 * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);*/
+		}
+		ImGui::End();
+
+		ImGui::Render();
+		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}
+
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
 
 	VAO1.Delete();
 	VBO1.Delete();

@@ -7,7 +7,7 @@ Long term goal is to use the GPU for the formulas that calculate the path of the
 I'll (hopefully) add this later :)
 
 ## Credit section
-I copied a lot from the Victor Gordan tutorials, mainly the shaders, VAO, VBO, EBO, shaderClass and the setup of Visual Studio (So basically everything that is not specifically unique to my project).
+I copied a lot from the Victor Gordan tutorials, mainly the shaders, VAO, VBO, EBO, shaderClass, ImGui and the setup of Visual Studio (So basically everything that is not specifically unique to my project).
 I have tried my best but I'm not at the skill level where I can do all of that myself yet.
 
 ### AI
