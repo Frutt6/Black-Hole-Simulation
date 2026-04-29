@@ -1,26 +1,31 @@
 #version 430
+// PRIMARILY AI GENERATED
 
 struct GPURay {
-	dvec2 pos;
-	dvec2 vel;
-	vec2 cartPos;
-	int dead;
-	int pad1; int pad2; int pad3; int pad4; int pad5;
+    dvec2 pos;
+    dvec2 vel;
+    vec2 cartPos;
+    int dead;
+    int pad1; int pad2; int pad3; int pad4; int pad5;
 };
 
 layout(std430, binding = 0) buffer RayBuffer {
     GPURay rays[];
 };
 
-uniform float r_s;
+layout(std430, binding = 1) buffer CounterBuffer {
+    int deathCount;
+};
+
+uniform double r_s;
 uniform float deltaTime;
 uniform int rayCount;
 
 dvec2 accel(dvec2 pos, dvec2 vel) {
-    if (pos.r < double(r_s)) return dvec2(0.0);
+    if (pos.x <= 0.0) return dvec2(0.0);
     return dvec2(
-        vel.g * vel.g * (pos.r - 1.5 * double(r_s)),
-		-2.0 * vel.r * vel.g / pos.r
+        vel.y * vel.y * (pos.x - 1.5 * r_s),
+        -2.0 * vel.x * vel.y / pos.x
     );
 }
 
@@ -31,8 +36,8 @@ void main() {
     if (i >= uint(rayCount)) return;
     if (rays[i].dead == 1) return;
 
-    int substeps = clamp(int(1000.0 * double(r_s) / rays[i].pos.x), 1, 1000) + 15;
-    double subDelta = deltaTime / double(substeps);
+    int substeps = clamp(int(1000.0 * r_s / rays[i].pos.x), 1, 1000) + 15;
+    double subDelta = double(deltaTime) / double(substeps);
     dvec2 p = rays[i].pos;
     dvec2 v = rays[i].vel;
 
@@ -49,9 +54,17 @@ void main() {
         p += (subDelta / 6.0) * (k1p + 2.0*k2p + 2.0*k3p + k4p);
         v += (subDelta / 6.0) * (k1v + 2.0*k2v + 2.0*k3v + k4v);
 
-        if (p.r < double(r_s)) { rays[i].dead = 1; break; }
+        if (p.x <= r_s) {
+            rays[i].dead = 1;
+            rays[i].pos = p;
+            rays[i].vel = v;
+            rays[i].cartPos = vec2(0.0);
+            atomicAdd(deathCount, 1); // AI[ increment death counter ]AI
+            return; // AI[ exit immediately, don't write bounced-back values ]AI
+        }
     }
 
     rays[i].pos = p;
     rays[i].vel = v;
+    rays[i].cartPos = vec2(float(p.x) * cos(float(p.y)), float(p.x) * sin(float(p.y)));
 }

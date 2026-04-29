@@ -26,6 +26,8 @@ double TIME_SCALE = 60;
 double WINDOW_SIZE = 800;
 bool RIGHT_DOWN = false;
 glm::vec2 old_MOUSE_POS;
+double NEW_RAYS_ON_CLICK = 1980;
+int activeRays = 0;
 
 GLuint raySSBO = 0;
 
@@ -95,7 +97,7 @@ struct Ray {
 	void move(double deltaTime) {
 		if (!this->dead) this->trail.push_back(this->cartPos);
 		else this->trail.push_back(BLACK_HOLE.pos);
-		if (this->trail.size() > 1000) this->trail.erase(trail.begin());
+		if (this->trail.size() > 1500) this->trail.erase(trail.begin());
 
 		if (this->dead) return;
 
@@ -165,22 +167,19 @@ GPURay makeRay(glm::dvec2 pos, glm::dvec2 dir) {
 }
 
 void init_rays(int amount, glm::dvec2 pos) {
+	activeRays += amount;
+	int startIdx = gpuRays.size();
 	for (int i = 0; i < amount; i++) {
-		float angle = ((360.0f / (amount)) * i) * (_pi / 180.0f);
-		Rays.push_back(Ray(pos, glm::dvec2(cos(angle), sin(angle))));
+		float angle = ((360.0f / amount) * i) * (_pi / 180.0f);
+		gpuRays.push_back(makeRay(pos, glm::dvec2(cos(angle), sin(angle))));
 	}
 
-	/*glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
-	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, gpuRays.size() * sizeof(GPURay), gpuRays.data());
-
-	GPURay* check = (GPURay*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-	std::cout << "pre-dispatch ray[0] dead: " << check[0].dead
-		<< " Xpos: " << check[0].pos.x << std::endl;
-	glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);*/
-
-	/*for (int i = 0; i < amount; i++) {
-		Rays.push_back(Ray(glm::dvec2(-1e8, (20e7 / amount * i) - 10e7), glm::dvec2(1.0, 0.0)));
-	}*/
+	// Upload only the newly added rays into the pre-allocated SSBO	(AI alert)
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+		startIdx * sizeof(GPURay),
+		amount * sizeof(GPURay),
+		gpuRays.data() + startIdx);
 }
 
 std::vector<GLfloat> generateCircle(float cx, float cy, float r, int sectors,
@@ -221,7 +220,7 @@ void mouse_callback(GLFWwindow* window, int button, int action, int mods) {
 		double worldX = (xpos / WINDOW_SIZE * 2.0 - 1.0 - SPACE_OFFSET.x) / SPACE_SCALE;
 		double worldY = ((WINDOW_SIZE - ypos) / WINDOW_SIZE * 2.0 - 1.0 - SPACE_OFFSET.y) / SPACE_SCALE;
 
-		init_rays(180, glm::dvec2(worldX, worldY));
+		init_rays((int)NEW_RAYS_ON_CLICK, glm::dvec2(worldX, worldY));
 		/*double r = sqrt(worldX * worldX + worldY * worldY);
 		std::cout << "clicked at: " << worldX << ", " << worldY
 			<< " | r = " << r << " km"
@@ -239,6 +238,7 @@ void mouse_callback(GLFWwindow* window, int button, int action, int mods) {
 }
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+	if (ImGui::GetIO().WantCaptureMouse) return;
 	double mouseX, mouseY;
 	glfwGetCursorPos(window, &mouseX, &mouseY);
 
@@ -289,7 +289,13 @@ int main() {
 	auto circleIndices = generateCircleIndices(sectors);
 
 	Shader shaderProgram("shaders/default.vert", "shaders/default.frag");
-	Shader computeShader("shaders/move_rays.comp");
+	Shader computeShader("shaders/rays.comp");
+
+	// AI[
+	Shader rayShaderProgram("shaders/rays.vert", "shaders/rays.frag");
+	GLuint emptyVAO;
+	glGenVertexArrays(1, &emptyVAO);
+	// ]AI
 
 	VAO VAO1;
 	VAO1.Bind();
@@ -311,10 +317,16 @@ int main() {
 	VBO1.Unbind();
 	EBO1.Unbind();
 
+	GLuint counterSSBO = 0;
 	glGenBuffers(1, &raySSBO);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, 100000/*maxrays*/ * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, 5e6 * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, raySSBO);
+
+	glGenBuffers(1, &counterSSBO);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSSBO);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int), nullptr, GL_DYNAMIC_READ);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, counterSSBO);
 
 	GLint uniScale = glGetUniformLocation(shaderProgram.ID, "scale");
 	GLint uniOffset = glGetUniformLocation(shaderProgram.ID, "offset");
@@ -375,19 +387,15 @@ int main() {
 			object.update();
 		}
 
-
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
-		GPURay* data = (GPURay*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-
 		/*if (gpuRays.size() > 0) {
 			std::cout << "ray[0] pos: " << data[0].pos.x << ", " << data[0].pos.y << std::endl;
 			std::cout << "ray[0] dead: " << data[0].dead << std::endl;
 		}*/
 
-		int activeRays = 0;
+		/*int activeRays = 0;
 		for (int i = 0; i < gpuRays.size(); i++) {
 			if (!data[i].dead) activeRays++;
-		}
+		}*/
 
 		/*for (int i = 0; i < (int)gpuRays.size(); i++) {
 			if (data[i].dead) continue;
@@ -404,22 +412,54 @@ int main() {
 
 		glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);*/
 
-		for (Ray& ray : Rays) {
-			ray.move(deltaTime);
+		/*if (!gpuRays.empty()) {
+			std::cout << "r_s passed to shader: " << BLACK_HOLE.r_s
+				<< " ray[0].pos.x: " << gpuRays[0].pos.x << std::endl;
+		}*/
 
-			for (int i = 0; i < ray.trail.size(); i++) {
-				glm::dvec2 dot = ray.trail[i];
+		// --- Compute pass ---  AI[
+		int zero = 0;
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSSBO);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &zero);
 
-				float alpha = (float)i / ray.trail.size();
+		if (!gpuRays.empty()) {
+			computeShader.Activate();
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, raySSBO);
+			glUniform1d(glGetUniformLocation(computeShader.ID, "r_s"), BLACK_HOLE.r_s);
+			glUniform1f(glGetUniformLocation(computeShader.ID, "deltaTime"), (float)(deltaTime * TIME_SCALE));
+			glUniform1i(glGetUniformLocation(computeShader.ID, "rayCount"), (int)gpuRays.size());
+			glDispatchCompute(((int)gpuRays.size() + 63) / 64, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-				glUniform1f(uniScale, 0.002);
-				glUniform2f(uniOffset, SPACE_SCALE * dot.x + SPACE_OFFSET.x, SPACE_SCALE * dot.y + SPACE_OFFSET.y);
-				glUniform3f(uniColor, alpha * ray.color.r, alpha * ray.color.g, alpha * ray.color.b);
 
-				glDrawElements(GL_TRIANGLES, circleIndices.size(), GL_UNSIGNED_INT, 0);
-			}
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, counterSSBO);
+			int* deathCount = (int*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+			activeRays -= *deathCount;
+			glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 		}
 
+		// --- Render pass ---
+		shaderProgram.Activate();
+		VAO1.Bind();
+
+		// AI[
+		if (!gpuRays.empty()) {
+			glEnable(GL_PROGRAM_POINT_SIZE);
+			rayShaderProgram.Activate();
+			glUniform1d(glGetUniformLocation(rayShaderProgram.ID, "spaceScale"), SPACE_SCALE);
+			glUniform2d(glGetUniformLocation(rayShaderProgram.ID, "spaceOffset"), SPACE_OFFSET.x, SPACE_OFFSET.y);
+			glBindVertexArray(emptyVAO);
+			glDrawArrays(GL_POINTS, 0, (GLsizei)gpuRays.size());
+		}
+		// ]AI
+
+		GLenum err;
+		while ((err = glGetError()) != GL_NO_ERROR) {
+			std::cout << "GL Error: 0x" << std::hex << err << std::endl;
+		} // ]AI
+
+		shaderProgram.Activate();
+		VAO1.Bind();
 
 		for (Object& object : Objects) {
 			double renderRadius = std::max(object.r_s, object.diameter / 2.0);
@@ -436,6 +476,12 @@ int main() {
 		double mass_solar = BLACK_HOLE.mass / 1.989e30;
 		double min_sol = 1e35 / 1.989e30, max_sol = 1e38 / 1.989e30;
 		double min_time = 1.0, max_time = 1000.0;
+		double min_new_rays = 36, max_new_rays = 2e5;
+
+		ImGui::Text("FPS: %d", displayFps);
+		ImGui::Text("Frame Time: %.3f ms\n\n", displayFrameTime * 1000.0f);
+
+		ImGui::Text("Space Scale: %g\n\n", SPACE_SCALE);
 
 		if (ImGui::SliderScalar("Mass", ImGuiDataType_Double, &mass_solar, &min_sol, &max_sol, "%.3gMsol", ImGuiSliderFlags_Logarithmic)) BLACK_HOLE.mass = mass_solar * 1.989e30;
 		ImGui::Text("Schwarzschild radius: %.2g km\n\n", BLACK_HOLE.r_s);
@@ -443,15 +489,13 @@ int main() {
 		if (ImGui::SliderScalar("Time Scale", ImGuiDataType_Double, &TIME_SCALE, &min_time, &max_time, "%.0f")) TIME_SCALE = round(TIME_SCALE);
 		ImGui::Text("Time Passed: %.0f min %.0f s\n\n", floor(timePassed / 60), fmod(timePassed, 60.0));
 
-		ImGui::Text("FPS: %d", displayFps);
-		ImGui::Text("Frame Time: %.3f ms", displayFrameTime * 1000.0f);
-		ImGui::Text("Active Rays: %d\n\n", activeRays);
-
-		if (ImGui::Button("Clear Rays")) {
-			Rays.clear();
-			/*gpuRays.clear();
+		if (ImGui::SliderScalar("New Rays", ImGuiDataType_Double, &NEW_RAYS_ON_CLICK, &min_new_rays, &max_new_rays, "%.0f")) NEW_RAYS_ON_CLICK = round(NEW_RAYS_ON_CLICK);
+		ImGui::Text("Active Rays: %d", activeRays);
+		if (ImGui::Button("Clear Rays")) { // AI alert
+			activeRays = 0;
+			gpuRays.clear();
 			glBindBuffer(GL_SHADER_STORAGE_BUFFER, raySSBO);
-			glBufferData(GL_SHADER_STORAGE_BUFFER, 100000 * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);*/
+			glBufferData(GL_SHADER_STORAGE_BUFFER, 5e6 * sizeof(GPURay), nullptr, GL_DYNAMIC_DRAW);
 		}
 		ImGui::End();
 
