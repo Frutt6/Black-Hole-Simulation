@@ -7,6 +7,7 @@ Long term goal is to use the GPU for the formulas that calculate the path of the
 If you trust it you can use the Release Build folder, and otherwise you'll be on your own in building it for now \:).
 
 ## Credit section
+The reason I started this project was because I saw the YouTube videos of kavan010, I thought they were so cool so i decided to learn C++ to make my own.
 I copied a lot from the Victor Gordan tutorials, mainly the shaders, VAO, VBO, EBO, shaderClass, ImGui and the setup of Visual Studio (So basically everything that is not specifically unique to my project).
 I have tried my best but I'm not at the skill level where I can do all of that myself yet.
 
